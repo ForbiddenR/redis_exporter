@@ -10,6 +10,11 @@ use tokio::sync::RwLock;
 
 use crate::exporter::Exporter;
 
+// just return 200 when requesting
+pub async fn heartbeat() -> StatusCode {
+    StatusCode::OK
+}
+
 // route for prometheus endpoint
 pub async fn metrics(state: State<Arc<RwLock<Exporter>>>) -> Response {
     let metrics;

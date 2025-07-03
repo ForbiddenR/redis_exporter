@@ -21,5 +21,4 @@ envy = "0.4"
 mimalloc = { version = "0.1", optional = true, default-features = false }
 
 [features]
-default = ["mi-malloc"]
 mi-malloc = ["mimalloc"]

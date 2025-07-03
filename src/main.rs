@@ -25,6 +25,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let state = Arc::new(RwLock::new(exporter));
 
     let app = Router::new()
+        .route("/heartbeat", get(router::heartbeat))
         .route("/metrics", get(router::metrics))
         .with_state(state);
 
