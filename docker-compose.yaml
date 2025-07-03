@@ -1,0 +1,67 @@
+services:
+  redis1:
+    image: redis:8.0-alpine
+    hostname: redis-primary
+    ports:
+      - 26379:6379
+    networks:
+      - redis
+    command: "redis-server --protected-mode no --requirepass dummy --user exporter"                                              
+    # command: "redis-server --protected-mode no --masterauth master123 --requirepass dummy --user exporter on +CLIENT +INFO '>123456'"
+
+  redis2:
+    image: redis:8.0-alpine
+    hostname: redis-salve
+    ports:
+      - 26380:6380
+    networks:
+      - redis
+    command: "redis-server --protected-mode no --port 6380 --masterauth dummy --requirepass dummy --replicaof redis-primary 6379 --user exporter"
+
+  redis3:
+    image: redis:8.0-alpine
+    hostname: redis-salve2
+    ports:
+      - 26381:6381
+    networks:
+      - redis
+    command: "redis-server --protected-mode no --port 6381 --masterauth dummy --requirepass dummy --replicaof redis-primary 6379 --user exporter"
+
+  sentinel1:
+    image: redis:8.0-alpine
+    ports:
+      - 15000:5000
+    volumes:
+      - ./sentinel1.conf:/app/sentinel1.conf:rw
+    networks:
+      - redis
+    depends_on:
+      - redis1
+    command: "redis-server /app/sentinel1.conf --sentinel --protected-mode no --requirepass dummy"
+
+  sentinel2:
+    image: redis:8.0-alpine
+    ports:
+      - 15001:5001
+    volumes:
+      - ./sentinel2.conf:/app/sentinel1.conf:rw
+    networks:
+      - redis
+    depends_on:
+      - redis1
+    command: "redis-server /app/sentinel1.conf --sentinel --protected-mode no --requirepass dummy"
+
+  sentinel3:
+    image: redis:8.0-alpine
+    ports:
+      - 15002:5002
+    volumes:
+      - ./sentinel3.conf:/app/sentinel1.conf:rw
+    networks:
+      - redis
+    depends_on:
+      - redis1
+    command: "redis-server /app/sentinel1.conf --sentinel --protected-mode no --requirepass dummy"
+
+networks:
+  redis: {}

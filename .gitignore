@@ -1,4 +1,0 @@
-/target
-docker-compose*
-*.conf
-*.tar.gz
