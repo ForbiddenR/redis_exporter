@@ -38,7 +38,8 @@ impl Exporter {
         Self { client, up, gauges }
     }
 
-    pub fn get_client(&self) -> &redis::Client {
+    // get a reference of the redis client
+    fn get_client(&self) -> &redis::Client {
         &self.client
     }
 
@@ -75,8 +76,10 @@ impl Exporter {
 
     async fn get_info(&self) -> Result<f64> {
         if let Ok(mut conn) = self.get_client().get_multiplexed_tokio_connection().await {
+            // fetch redis info message
             let info_message = redis::cmd("info").query_async::<String>(&mut conn).await?;
 
+            // split it by "\r\n" and collect them as a vec
             let lines = info_message
                 .split("\r\n")
                 .filter(|p| !p.is_empty())
@@ -134,6 +137,7 @@ impl Exporter {
     }
 }
 
+// parse the value of redis info
 fn parse_and_set<F>(v: &str, f: F)
 where
     F: Fn(f64),

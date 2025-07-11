@@ -15,21 +15,18 @@ cfg_if! {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-
-    let c = Config::build()?;
-
-    let client = redis::Client::open(c.get_url())?;
-
-    let exporter = Exporter::new(client);
-
-    let state = Arc::new(RwLock::new(exporter));
-
     let app = Router::new()
+        // health checker
         .route("/heartbeat", get(router::heartbeat))
+        // prometheus' endpoint
         .route("/metrics", get(router::metrics))
-        .with_state(state);
+        // add exporter which will collect prometheus' metrics
+        .with_state(Arc::new(RwLock::new(Exporter::new(redis::Client::open(
+            Config::build()?.get_url(),
+        )?))));
 
     let listener = TcpListener::bind("0.0.0.0:8080").await?;
     axum::serve(listener, app).await?;
+
     Ok(())
 }
