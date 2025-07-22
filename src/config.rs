@@ -1,6 +1,5 @@
 use serde::Deserialize;
-
-use crate::error::Result;
+use anyhow::Result;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {

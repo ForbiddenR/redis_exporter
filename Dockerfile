@@ -12,8 +12,8 @@ FROM alpine:3.22
 
 WORKDIR /app
 
-COPY --from=builder /app/target/release/ax-redis-exporter ax-redis-exporter
+COPY --from=builder /app/target/release/redis_exporter redis_exporter
 
 ENV RUST_LOG=info
 
-ENTRYPOINT ["./ax-redis-exporter"]
+ENTRYPOINT ["./redis_exporter"]

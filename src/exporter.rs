@@ -1,41 +1,104 @@
-use std::collections::HashMap;
+use anyhow::Result;
+use prometheus::{Gauge, GaugeVec, Opts, core::Collector, proto::MetricFamily};
 
-use prometheus::{Gauge, core::Collector};
+use crate::info::{Info, KeySpace};
 
-use crate::error::Result;
+const DEFAULT_LABEL: &[&str; 0] = &[];
+
+macro_rules! new {
+    (i, $name: literal, $help:literal, $fn:expr$(,)?) => {
+        InfoMetric::new(to_gauge_vec!($name, $help), $fn)
+    };
+    (k, $name: literal, $help:literal, $fn:expr$(,)?) => {
+        KeyspaceMetric::new(to_gauge_vec!($name, $help), $fn)
+    };
+}
+
+macro_rules! to_gauge_vec {
+    ($name: literal, $help:literal) => {
+        GaugeVec::new(Opts::new($name, $help), DEFAULT_LABEL)
+            .expect("failed to create gauge vector")
+    };
+}
+
+macro_rules! initializing {
+    ($name:ident, $t:ty) => {
+        #[derive(Debug)]
+        struct $name {
+            gauge_vec: GaugeVec,
+            value_fn: fn(&$t) -> f64,
+        }
+
+        impl $name {
+            fn new(gauge_vec: GaugeVec, value_fn: fn(&$t) -> f64) -> Self {
+                Self {
+                    gauge_vec,
+                    value_fn,
+                }
+            }
+        }
+    };
+}
+
+initializing!(InfoMetric, Info);
+initializing!(KeyspaceMetric, KeySpace);
 
 #[derive(Debug)]
 pub struct Exporter {
     client: redis::Client,
     up: Gauge,
-    gauges: HashMap<String, Gauge>,
-}
-
-macro_rules! to_gauge {
-    ($key: literal, $name: literal, $help:literal) => {
-        ($key.to_string(), Gauge::new($name, $help).unwrap())
-    };
+    info_metrics: Vec<InfoMetric>,
+    keyspace_metrics: Vec<KeyspaceMetric>,
 }
 
 impl Exporter {
     pub fn new(client: redis::Client) -> Self {
         let up = Gauge::new("node_status", "The status of current node").unwrap();
-        let gauges = HashMap::from([
-            to_gauge!(
+        let info_metrics = vec![
+            new!(
+                i,
                 "connected_clients",
-                "connected_clients",
-                "Total connections connect to redis"
+                "Total connections connect to redis",
+                |i| i.connected_clents as f64,
             ),
-            to_gauge!("maxclients", "max_clients", "Max allowed connection number"),
-            to_gauge!("used_memory", "used_memory", "Used memory in bytes"),
-            to_gauge!("used_cpu_sys", "used_cpu_sys", "Used cpu in system"),
-            to_gauge!("used_cpu_user", "used_cpu_user", "Used cpu in user"),
-            to_gauge!("role", "role_master", "Current node is master"),
-            to_gauge!("dbsize", "dbsize", "Total key number of current node"),
-            to_gauge!("ttl", "avg_ttl", "Total avg_ttl of all db in this node"),
-        ]);
+            new!(
+                i,
+                "max_clients",
+                "Max allowed connection number",
+                |i| i.maxclients as f64,
+            ),
+            new!(i, "used_memory", "Used memory in bytes", |i| i.used_memory),
+            new!(i, "used_cpu_sys", "Used cpu in system", |i| i.used_cpu_sys),
+            new!(i, "used_cpu_user", "Used cpu in user", |i| i.used_cpu_user),
+            new!(
+                i,
+                "role_master",
+                "Current node is master",
+                |i| (i.role == "master") as u8 as f64
+            ),
+        ];
 
-        Self { client, up, gauges }
+        let keyspace_metrics = vec![
+            new!(
+                k,
+                "dbsize",
+                "Total key number of current node",
+                |k| k.key_number as f64
+            ),
+            new!(
+                k,
+                "avg_ttl",
+                "Total avg_ttl of all db in this node",
+                |k| k.avg_ttl as f64
+            ),
+        ];
+
+        Self {
+            client,
+            up,
+            info_metrics,
+            keyspace_metrics,
+        }
     }
 
     // get a reference of the redis client
@@ -43,137 +106,62 @@ impl Exporter {
         &self.client
     }
 
-    pub async fn collect(&mut self) -> Result<Vec<prometheus::proto::MetricFamily>> {
-        let mut metrics = vec![];
-        self.up.set(match self.get_info().await {
-            Ok(f) if f == 0.0 => f,
-            Ok(f) => {
-                self.gauges
-                    .iter()
-                    .for_each(|(_, g)| metrics.extend(g.collect()));
-                f
+    pub async fn collect(&mut self) -> Vec<MetricFamily> {
+        match self.get_info().await {
+            Ok(m) => {
+                self.up.set(1.0);
+                m
             }
-            Err(_) => 0.0,
+            Err(e) => {
+                eprintln!("Failed to collect metrics: {e}");
+                self.up.set(0.0);
+                vec![]
+            }
+        }
+        .into_iter()
+        .chain(self.up.collect())
+        .filter(|f| !f.get_metric().is_empty())
+        .collect()
+    }
+
+    async fn get_info(&self) -> Result<Vec<MetricFamily>> {
+        let mut conn = self.get_client().get_multiplexed_tokio_connection().await?;
+        // fetch redis info message
+        let info_message = redis::cmd("info").query_async::<String>(&mut conn).await?;
+
+        // split it by "\r\n" and collect them as a vec
+        let lines = info_message
+            .split("\r\n")
+            .filter(|p| !p.is_empty())
+            .collect::<Vec<&str>>();
+
+        let info = Info::parse(&lines);
+
+        self.info_metrics.iter().for_each(|f| {
+            f.gauge_vec
+                .with_label_values(DEFAULT_LABEL)
+                .set((f.value_fn)(&info))
         });
-        metrics.extend(self.up.collect());
-        Ok(metrics)
-    }
 
-    fn set_keyspace_metric(&self, key: &str, value: &str) -> Result<(f64, f64)> {
-        let mut db_size = 0.0;
-        let mut avg_ttl = 0.0;
-        if key.starts_with("db") {
-            for (k, v) in &split(value) {
-                match k.as_str() {
-                    "keys" => db_size = v.parse()?,
-                    "avg_ttl" => avg_ttl = v.parse()?,
-                    _ => {}
-                }
+        if info.is_master() {
+            for keyspace in &info.keyspaces {
+                self.keyspace_metrics.iter().for_each(|f| {
+                    f.gauge_vec
+                        .with_label_values(DEFAULT_LABEL)
+                        .set((f.value_fn)(keyspace));
+                });
             }
         }
-        Ok((db_size, avg_ttl))
-    }
 
-    async fn get_info(&self) -> Result<f64> {
-        if let Ok(mut conn) = self.get_client().get_multiplexed_tokio_connection().await {
-            // fetch redis info message
-            let info_message = redis::cmd("info").query_async::<String>(&mut conn).await?;
-
-            // split it by "\r\n" and collect them as a vec
-            let lines = info_message
-                .split("\r\n")
-                .filter(|p| !p.is_empty())
-                .collect::<Vec<&str>>();
-
-            let mut field_class = "";
-            let mut role = "";
-            let mut total_keys = 0.0;
-            let mut total_avg_ttl = 0.0;
-            for result in lines {
-                if result.len() > 0 && result.starts_with("# ") {
-                    field_class = &result[2..];
-                    continue;
-                }
-
-                let (key, value) = match result.split_once(":") {
-                    Some(v) => v,
-                    None => continue,
-                };
-
-                if key.is_role() {
-                    role = value;
-                    continue;
-                }
-
-                match field_class {
-                    "Keyspace" => {
-                        if role.is_master()
-                            && let Ok((keys, ttl)) = self.set_keyspace_metric(key, value)
-                        {
-                            total_keys += keys;
-                            total_avg_ttl += ttl;
-                        }
-                        continue;
-                    }
-                    _ => {}
-                }
-
-                self.gauges
-                    .get(key)
-                    .map(|g| parse_and_set(value, |f| g.set(f)));
-            }
-
-            self.gauges.get("dbsize").map(|g| g.set(total_keys));
-            self.gauges.get("ttl").map(|g| g.set(total_avg_ttl));
-
-            self.gauges
-                .get("role")
-                .map(|g| g.set(if role.is_master() { 1.0 } else { 0.0 }));
-
-            Ok(1.0)
-        } else {
-            Ok(0.0)
-        }
-    }
-}
-
-// parse the value of redis info
-fn parse_and_set<F>(v: &str, f: F)
-where
-    F: Fn(f64),
-{
-    match v {
-        "ok" | "true" => f(1.0),
-        "err" | "fail" | "false" => f(2.0),
-        other => {
-            if let Ok(d) = other.parse() {
-                f(d)
-            }
-        }
-    };
-}
-
-fn split(pairs: &str) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    for pair in pairs.split(",").collect::<Vec<&str>>() {
-        if let Some((k, v)) = pair.split_once("=") {
-            map.insert(k.to_string(), v.to_string());
-        }
-    }
-    map
-}
-
-trait Is {
-    fn is_master(&self) -> bool;
-    fn is_role(&self) -> bool;
-}
-
-impl Is for &str {
-    fn is_master(&self) -> bool {
-        *self == "master"
-    }
-
-    fn is_role(&self) -> bool {
-        *self == "role"
+        Ok(self
+            .info_metrics
+            .iter()
+            .flat_map(|f| f.gauge_vec.collect())
+            .chain(
+                self.keyspace_metrics
+                    .iter()
+                    .flat_map(|f| f.gauge_vec.collect()),
+            )
+            .collect())
     }
 }

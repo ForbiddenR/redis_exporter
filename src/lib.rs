@@ -1,4 +1,4 @@
-pub mod exporter;
-pub mod router;
-pub mod error;
 pub mod config;
+pub mod exporter;
+pub mod info;
+pub mod router;

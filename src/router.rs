@@ -16,26 +16,21 @@ pub async fn heartbeat() -> StatusCode {
 }
 
 // route for prometheus endpoint
-pub async fn metrics(state: State<Arc<RwLock<Exporter>>>) -> Response {
-    let metrics;
-
-    {
-        let mut exporter = state.0.write().await;
-        metrics = exporter.collect().await;
-    }
+pub async fn metrics(State(state): State<Arc<RwLock<Exporter>>>) -> Response {
+    let metrics = { state.write().await.collect().await };
 
     let encoder = TextEncoder::new();
     let mut buffer = Vec::new();
 
-    if let Ok(m) = metrics
-        && encoder.encode(&m, &mut buffer).is_ok()
-    {
-        Response::builder()
+    match encoder.encode(&metrics, &mut buffer) {
+        Err(e) => {
+            eprintln!("{e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        _ => Response::builder()
             .status(StatusCode::OK)
             .header("Content-Type", encoder.format_type())
             .body(buffer.into())
-            .unwrap()
-    } else {
-        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            .unwrap(),
     }
 }
