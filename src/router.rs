@@ -8,7 +8,7 @@ use axum::{
 use prometheus::{Encoder, TextEncoder};
 use tokio::sync::RwLock;
 
-use crate::exporter::Exporter;
+use crate::{exporter::Exporter, header::ExplicitHeader};
 
 // just return 200 when requesting
 pub async fn heartbeat() -> StatusCode {
@@ -16,8 +16,11 @@ pub async fn heartbeat() -> StatusCode {
 }
 
 // route for prometheus endpoint
-pub async fn metrics(State(state): State<Arc<RwLock<Exporter>>>) -> Response {
-    let metrics = { state.write().await.collect().await };
+pub async fn metrics(
+    State(state): State<Arc<RwLock<Exporter>>>,
+    header: ExplicitHeader,
+) -> Response {
+    let metrics = { state.write().await.collect(&header.0).await };
 
     let encoder = TextEncoder::new();
     let mut buffer = Vec::new();

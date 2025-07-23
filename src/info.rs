@@ -1,11 +1,20 @@
+#[derive(Debug, PartialEq, Eq)]
+pub enum Mode {
+    Standard,
+    Simple,
+}
+
+impl Mode {
+    pub fn is_standard(&self) -> bool {
+        self == &Mode::Standard
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct Info {
     pub role: String,
     pub connected_clents: i64,
     pub maxclients: i64,
-    pub used_memory: f64,
-    pub used_cpu_sys: f64,
-    pub used_cpu_user: f64,
     pub keyspaces: Vec<KeySpace>,
 }
 
@@ -58,9 +67,6 @@ impl Info {
                     "role" => info.role = value.to_string(),
                     "connected_clients" => info.connected_clents = value.parse().unwrap_or(0),
                     "maxclients" => info.maxclients = value.parse().unwrap_or(0),
-                    "used_memory" => info.used_memory = value.parse().unwrap_or(0.0),
-                    "used_cpu_sys" => info.used_cpu_sys = value.parse().unwrap_or(0.0),
-                    "used_cpu_user" => info.used_cpu_user = value.parse().unwrap_or(0.0),
                     _ => {}
                 }
             }
@@ -68,7 +74,10 @@ impl Info {
         info
     }
 
-    pub fn is_master(&self) -> bool {
-        &self.role == "master"
+    pub fn mode(&self) -> &Mode {
+        match self.role.as_str() {
+            "master" => &Mode::Standard,
+            _ => &Mode::Simple,
+        }
     }
 }

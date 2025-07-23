@@ -1,7 +1,7 @@
 use anyhow::Result;
 use prometheus::{Gauge, GaugeVec, Opts, core::Collector, proto::MetricFamily};
 
-use crate::info::{Info, KeySpace};
+use crate::info::{Info, KeySpace, Mode};
 
 const DEFAULT_LABEL: &[&str; 0] = &[];
 
@@ -67,9 +67,6 @@ impl Exporter {
                 "Max allowed connection number",
                 |i| i.maxclients as f64,
             ),
-            new!(i, "used_memory", "Used memory in bytes", |i| i.used_memory),
-            new!(i, "used_cpu_sys", "Used cpu in system", |i| i.used_cpu_sys),
-            new!(i, "used_cpu_user", "Used cpu in user", |i| i.used_cpu_user),
             new!(
                 i,
                 "role_master",
@@ -106,8 +103,8 @@ impl Exporter {
         &self.client
     }
 
-    pub async fn collect(&mut self) -> Vec<MetricFamily> {
-        match self.get_info().await {
+    pub async fn collect(&self, mode: &Option<Mode>) -> Vec<MetricFamily> {
+        match self.get_info(mode).await {
             Ok(m) => {
                 self.up.set(1.0);
                 m
@@ -115,16 +112,25 @@ impl Exporter {
             Err(e) => {
                 eprintln!("Failed to collect metrics: {e}");
                 self.up.set(0.0);
-                vec![]
+                return self.up.collect();
             }
         }
         .into_iter()
-        .chain(self.up.collect())
         .filter(|f| !f.get_metric().is_empty())
+        .chain(self.up.collect())
         .collect()
     }
 
-    async fn get_info(&self) -> Result<Vec<MetricFamily>> {
+    async fn get_info(&self, mode: &Option<Mode>) -> Result<Vec<MetricFamily>> {
+        macro_rules! clear {
+            ($($metric:ident)+) => {
+                $(
+                    self.$metric.iter().for_each(|f|f.gauge_vec.reset());
+                )+
+            };
+        }
+        clear!(info_metrics keyspace_metrics);
+
         let mut conn = self.get_client().get_multiplexed_tokio_connection().await?;
         // fetch redis info message
         let info_message = redis::cmd("info").query_async::<String>(&mut conn).await?;
@@ -143,12 +149,12 @@ impl Exporter {
                 .set((f.value_fn)(&info))
         });
 
-        if info.is_master() {
+        if mode.as_ref().unwrap_or(info.mode()).is_standard() {
             for keyspace in &info.keyspaces {
                 self.keyspace_metrics.iter().for_each(|f| {
                     f.gauge_vec
                         .with_label_values(DEFAULT_LABEL)
-                        .set((f.value_fn)(keyspace));
+                        .add((f.value_fn)(keyspace));
                 });
             }
         }
